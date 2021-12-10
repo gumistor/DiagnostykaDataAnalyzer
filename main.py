@@ -5,23 +5,87 @@ from matplotlib.dates import DateFormatter
 import seaborn as sns
 import matplotlib.patches as mpatches
 import os
+import xml.etree.ElementTree as et
 
 sns.set(style='darkgrid')
 
 
-
-fileList = os.listdir(r'data')
+dir_name = r'data_real'
+fileList = os.listdir(dir_name)
 
 df = None
+df_alab = pd.DataFrame(columns=['Parametr', 'Materiał', 'Data', 'Wynik', 'Jednostka', 'Min', 'Max'])
 
 for fileItem in fileList:
-    fileName = os.path.join('.\\data', fileItem)
+    fileName = os.path.join('.\\'+dir_name, fileItem)
 
-    if df is None:
-        df = pd.read_csv(fileName, sep=';', decimal=",")
-    else:
-        df1 = pd.read_csv(fileName, sep=';', decimal=",")
-        df = pd.concat([df, df1], axis=0)
+    if fileItem.split('.')[-1].lower() == 'csv':
+        if df is None:
+            df = pd.read_csv(fileName, sep=';', decimal=",")
+        else:
+            df1 = pd.read_csv(fileName, sep=';', decimal=",")
+            df = pd.concat([df, df1], axis=0)
+
+    elif fileItem.split('.')[-1].lower() == 'xml':
+        file_root = et.parse(fileName).getroot()
+        for node in file_root:  # look for all Formularze
+            for formularz in node:  # look for all Formularz
+                badanie_data = formularz.find('Zlecenie').find('Data').text
+                sekcje = formularz.find('Sekcje')
+                for sekcja_node in sekcje:
+                    probki_node = sekcja_node.find('Próbki')
+                    for probka in probki_node:
+                        badanie_material = probka.find('Materiał').find('Symbol').text
+                        for wykonianie in probka.find('Wykonania'):
+                            for wyniki in wykonianie.find('Wyniki'):
+                                badanie_nazwa = wyniki.find('Parametr').find('Nazwa').text
+                                badanie_symbol = wyniki.find('Parametr').find('Symbol').text
+                                if wyniki.find('Parametr').find('Jednostka') is not None:
+                                    badanie_jednostka = wyniki.find('Parametr').find('Jednostka').text
+                                else:
+                                    badanie_jednostka = "--"
+                                if wyniki.find('WynikLiczbowy') is not None:
+                                    badanie_wynik = wyniki.find('WynikLiczbowy').text
+                                    badanie_wynik_txt = ""
+                                else:
+                                    badanie_wynik = np.nan
+                                    if wyniki.find('WynikTekstowy') is not None:
+                                        badanie_wynik_txt = wyniki.find('WynikTekstowy').text
+                                    else:
+                                        badanie_wynik_txt = ""
+                                if wyniki.find('Norma') is not None:
+                                    if wyniki.find('Norma').find('ZakresOd') is not None:
+                                        badanie_zakres_od = wyniki.find('Norma').find('ZakresOd').text
+                                    else:
+                                        badanie_zakres_od = 0
+                                    if wyniki.find('Norma').find('ZakresDo') is not None:
+                                        badanie_zakres_do = wyniki.find('Norma').find('ZakresDo').text
+                                    else:
+                                        badanie_zakres_do = np.inf
+                                else:
+                                    badanie_zakres_od = 0
+                                    badanie_zakres_do = np.inf
+
+                                temp_df = pd.DataFrame([[badanie_nazwa, badanie_material, badanie_data,
+                                                        badanie_wynik, badanie_jednostka,
+                                                         badanie_zakres_od, badanie_zakres_do]],
+                                                       columns=['Parametr', 'Materiał', 'Data',
+                                                                'Wynik', 'Jednostka',
+                                                                'Min', 'Max'])
+
+                                df_alab = df_alab.append(temp_df, ignore_index=True)
+
+#print(df_alab.loc[:, 'Materiał'].unique())
+
+df_alab.loc[df_alab.loc[:,'Materiał'] != 'MOCZ','Materiał'] = 'KREW'
+df_alab.loc[df_alab.loc[:,'Materiał'] == 'MOCZ','Materiał'] = 'MOCZ'
+
+df_alab.loc[:, 'Lab'] = 'ALAB'
+df.loc[:, 'Lab'] = 'Diag'
+
+#pd.set_option('display.expand_frame_repr', False)
+#print(df_alab)
+#pd.set_option('display.expand_frame_repr', True)
 
 # drop duplicates
 df = df.drop_duplicates()
@@ -43,11 +107,16 @@ for unique_parameter_item in unique_parameters:
 df[['Wynik', 'Jednostka']] = df.loc[:, 'Wynik'].str.split(' ', 1, expand=True)
 df[['Min', 'Max']] = df.loc[:, 'Zakres referencyjny'].str.split(' - ', 1, expand=True)
 
+df.loc[:, 'Materiał'] = ''
+df.loc[df.loc[:, 'Badanie'] != 'Badanie ogólne moczu', 'Materiał'] = 'KREW'
+df.loc[df.loc[:, 'Badanie'] == 'Badanie ogólne moczu', 'Materiał'] = 'MOCZ'
+
 df = df.drop(labels=['Badanie', 'Kod zlecenia', 'Zakres referencyjny', 'Opis'], axis=1)
 
 print(df.columns)
 
 df.loc[:, 'Data'] = pd.to_datetime(df.loc[:, 'Data'], format='%d-%m-%Y %H:%M:%S')
+df_alab.loc[:, 'Data'] = pd.to_datetime(df_alab.loc[:, 'Data'], format='%Y-%m-%d')
 
 df.loc[df['Min'] == '', 'Min'] = "0,0"
 df.loc[df['Max'] == '', 'Max'] = str(np.inf)
@@ -55,6 +124,53 @@ df.loc[df['Max'] == '', 'Max'] = str(np.inf)
 df.loc[:, 'Wynik'] = df.loc[:, 'Wynik'].str.replace(",", ".").astype(float)
 df.loc[:, 'Min'] = df.loc[:, 'Min'].str.replace(",", ".").astype(float)
 df.loc[:, 'Max'] = df.loc[:, 'Max'].str.replace(",", ".").astype(float)
+
+#match names
+if (df_alab is not None):
+    df_alab.loc[:, 'Wynik'] = df_alab.loc[:, 'Wynik'].astype(float)
+    df_alab.loc[:, 'Min'] = df_alab.loc[:, 'Min'].astype(float)
+    df_alab.loc[:, 'Max'] = df_alab.loc[:, 'Max'].astype(float)
+
+    # match names
+
+    df_alab.loc[df_alab.loc[:,'Parametr'] == 'Odczyn Biernackiego (C59)', 'Parametr'] = 'OB'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Triglicerydy (O49)', 'Parametr'] = 'Trójglicerydy'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Kwas moczowy  w surowicy (M45)', 'Parametr'] = 'Kwas moczowy'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Glukoza (L43)', 'Parametr'] = 'Glukoza'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'HDL-cholesterol (K01)', 'Parametr'] = 'Cholesterol HDL'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Cholesterol całkowity (I99)', 'Parametr'] = 'Cholesterol całkowity'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Nie-HDL', 'Parametr'] = 'Cholesterol nie-HDL'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Cholesterol LDL - wyliczany (K03)', 'Parametr'] = 'Cholesterol LDL'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Bilirubina całkowita (I89)', 'Parametr'] = 'Bilirubina całkowita'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Aminotransferaza alaninowa (ALT) (I17)', 'Parametr'] = 'ALT'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Kreatynina (M37)', 'Parametr'] = 'Kreatynina'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Mocznik (N13)', 'Parametr'] = 'Mocznik'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Białko C-reaktywne (CRP) - ilościowe (I81)', 'Parametr'] = 'CRP'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'HBs - antygen HBs (WZW typu B) (V39)', 'Parametr'] = 'Przeciwciała anty HBs'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Potas w surowicy (N45)', 'Parametr'] = 'Potas'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Tyreotropina (TSH)  trzeciej generacji (L69)', 'Parametr'] = 'TSH'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Gamma-glutamylotranspeptydaza (GGTP) (L31)', 'Parametr'] = 'GGTP'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Aminotransferaza asparaginianowa (AST) (I19)', 'Parametr'] = 'AST'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Sód w surowicy (O35)', 'Parametr'] = 'Sód'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'PH', 'Parametr'] = 'pH'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Eozynofile %', 'Parametr'] = 'Eozynofile'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Bazofile %', 'Parametr'] = 'Bazofile'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'Monocyty %', 'Parametr'] = 'Monocyty'
+    #df_alab.loc[df_alab.loc[:, 'Parametr'] == 'LUC', 'Parametr'] = 'Leukocyty'
+    #df_alab.loc[df_alab.loc[:, 'Parametr'] == 'LUC %', 'Parametr'] = 'Leukocyty'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'EGFR wyliczane z MDRD (M37)', 'Parametr'] = 'eGFR'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'RDW', 'Parametr'] = 'RDW-CV'
+    df_alab.loc[df_alab.loc[:, 'Parametr'] == 'PŁYTKI', 'Parametr'] = 'Płytki krwi'
+
+pd.set_option('display.expand_frame_repr', False)
+print(df)
+print(df_alab)
+
+df = df.append(df_alab)
+
+print(df)
+
+pd.set_option('display.expand_frame_repr', True)
 
 df_ch = df.loc[df['Parametr'] == 'Cholesterol całkowity', ('Data','Wynik')]
 
@@ -107,6 +223,7 @@ def plot_parameter(df_local, param_name, label, ax_local, marker_in):
     curr_data_local.plot(x='Data', y='Wynik', xlabel='Data',
                          title=param_name, ylabel=curr_data_local.iloc[0]['Jednostka'],
                          ax=ax_local, grid=True, label=label, marker=marker_in, linestyle='dotted')
+    #plt.fill_between(x='Data', y1='Min', y2='Max', data=curr_data_local)
 
     return curr_data_local.loc[:, 'Data']
 
@@ -157,7 +274,7 @@ def plot_set_of_values(title, values, labels, ax_local, last_plot=True, seaborn_
     return x_ticks_values
 
 
-fig1, ax1 = plt.subplots(figsize=(21,12))
+fig1, ax1 = plt.subplots(figsize=(21, 12))
 x_val_1 = plot_set_of_values('Próby wątrobowe', ['ALT', 'AST', 'Bilirubina całkowita'], [], ax1)
 fig1.subplots_adjust(top=0.965,
                     bottom=0.08,
